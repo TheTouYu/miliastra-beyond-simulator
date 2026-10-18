@@ -6,6 +6,8 @@ import { tintedImage } from './assets/raster.js'
 import { rasterizeSlices, resolveImageType } from './assets/image-stretch.js'
 import { imageAssetKey } from './assets/catalog.js'
 import { scrollBarGeometry } from './play/scroll-geometry.js'
+import { localFontStack } from './host/local-font.js'
+import { textLayout } from './play/text-layout.js'
 
 const require = createRequire(import.meta.url)
 
@@ -132,7 +134,8 @@ function drawTextItem(ctx, item, width, height) {
   const bg = argb(item.bgColor, 0x00ffffff)
   ctx.fillStyle = cssColor(bg)
   ctx.fillRect(-width / 2, -height / 2, width, height)
-  const font = Math.max(8, finite(item.fontSize, 12))
+  const layout = item.textLayout || textLayout(item, width, height)
+  const font = layout.fontSize
   const color = argb(item.fontColor, 0xffffffff)
   const horizontal = item.horizontalAlignment === 'Right' ? 1 : item.horizontalAlignment === 'Middle' ? 0.5 : 0
   const vertical = item.verticalAlignment === 'Bottom' ? 1 : item.verticalAlignment === 'Middle' ? 0.5 : 0
@@ -140,7 +143,7 @@ function drawTextItem(ctx, item, width, height) {
   ctx.beginPath()
   ctx.rect(-width / 2, -height / 2, width, height)
   ctx.clip()
-  ctx.font = `${font}px "Microsoft YaHei UI","Microsoft YaHei","HarmonyOS Sans SC","Noto Sans CJK SC",sans-serif`
+  ctx.font = `${font}px ${localFontStack()}`
   ctx.fillStyle = cssColor(color)
   ctx.textAlign = horizontal === 1 ? 'right' : horizontal === 0.5 ? 'center' : 'left'
   const scroll = item.kind === 'textwindow' ? item.scroll : null
@@ -153,8 +156,8 @@ function drawTextItem(ctx, item, width, height) {
   }
   const x = scroll ? -width / 2 + 2 + horizontal * scroll.textWidth : horizontal === 0 ? -width / 2 + 2 : horizontal === 1 ? width / 2 - 2 : 0
   const y = vertical === 0 ? -height / 2 : vertical === 1 ? height / 2 : 0
-  const lines = scroll?.lines || String(item.text || '').split('\n')
-  const lineHeight = scroll?.lineHeight || font * 1.2
+  const lines = scroll?.lines || layout.lines
+  const lineHeight = scroll?.lineHeight || layout.lineHeight
   const startY = scroll ? -height / 2 - scroll.offset + (scroll.max > 0 ? 0 : vertical * (height - scroll.contentLength))
     : vertical === 0.5 ? y - (lines.length - 1) * lineHeight / 2 : vertical === 1 ? y - (lines.length - 1) * lineHeight : y
   for (let i = 0; i < lines.length; i += 1) {
@@ -477,7 +480,7 @@ function editorBoxStyle(item) {
 function drawEditorLabel(ctx, text, width) {
   const label = String(text || '')
   if (!label) return
-  ctx.font = '10px "Microsoft YaHei UI","Microsoft YaHei","HarmonyOS Sans SC","Noto Sans CJK SC",sans-serif'
+  ctx.font = `10px ${localFontStack()}`
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
   const metrics = ctx.measureText(label)
