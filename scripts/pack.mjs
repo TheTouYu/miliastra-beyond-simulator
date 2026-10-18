@@ -30,7 +30,10 @@ export async function packProducts({ build = true } = {}) {
     }
     await writeFile(join(stage, 'package.json'), JSON.stringify(manifest, null, 2) + '\n')
     const result = JSON.parse(npm(['pack', '--ignore-scripts', '--json', '--pack-destination', output], { cwd: stage }))
-    const filename = result[0].filename
+    // `npm pack --json` emits an object keyed by package name, not an array
+    // (npm >= 9). Accept both shapes so a single-product stage still resolves.
+    const packed = Array.isArray(result) ? result[0] : Object.values(result)[0]
+    const filename = packed.filename
     const bytes = await readFile(join(output, filename))
     artifacts.push({ product, name: manifest.name, version: manifest.version, filename, sha256: createHash('sha256').update(bytes).digest('hex') })
     console.log(`Packed ${filename}`)
