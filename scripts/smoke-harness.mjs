@@ -1,4 +1,4 @@
-// Boot the actual 0.2 CLI with a release tarball in a disposable profile.
+// Boot the current 0.2 CLI with a release tarball in a disposable profile.
 // An optional CLI path reuses an existing installation; DSH_HOME stays isolated.
 import assert from 'node:assert/strict'
 import { copyFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
@@ -9,6 +9,7 @@ import { once } from 'node:events'
 import { setTimeout as delay } from 'node:timers/promises'
 import { root, cleanGenerated } from './paths.mjs'
 import { npm } from './npm.mjs'
+import { systemLanguage } from '../studio/host/system-language.js'
 
 const temporary = await mkdtemp(join(tmpdir(), 'qxqy-harness-smoke-'))
 const home = join(temporary, 'home')
@@ -21,7 +22,7 @@ try {
   await writeFile(join(temporary, 'package.json'), JSON.stringify({ private: true, type: 'module' }))
   let cli = process.argv[2] && resolve(process.argv[2])
   if (!cli) {
-    npm(['install', '--no-audit', '--no-fund', '--no-package-lock', '@deepseek-ai/dsh@0.2.0-rc.2'], {
+    npm(['install', '--no-audit', '--no-fund', '--no-package-lock', '@deepseek-ai/dsh@0.2.1-rc.2'], {
       cwd: temporary, stdio: 'inherit', timeout: 300_000,
     })
     cli = join(temporary, 'node_modules/@deepseek-ai/dsh/lib/bin.js')
@@ -38,7 +39,8 @@ try {
   await writeFile(join(profile, 'smoke.patch.yml'), [
     '- id: workspace-controller', '  config:', `    documentsDirectory: ${JSON.stringify(join(temporary, 'documents'))}`,
     '- insert:', '    - id: simulator-smoke-probe', '      name: ./smoke-probe.mjs',
-    '      config:', `        workspace: ${JSON.stringify(join(temporary, 'game'))}`, '',
+    '      config:', `        workspace: ${JSON.stringify(join(temporary, 'game'))}`,
+    `        languageBrowser: ${!!process.env.QXQY_BROWSER}`, '',
   ].join('\n'))
   child = spawn(process.execPath, [cli, '--profile', 'web', '--patch', join(profile, 'smoke.patch.yml'), '--no-open', '--port', '0'], {
     cwd: temporary, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
@@ -61,7 +63,13 @@ try {
   const report = await response.json()
   assert.equal(response.status, 200, JSON.stringify(report))
   assert.equal(report.ok, true, JSON.stringify(report))
-  console.log(`PASS Harness ${harness.version}: CLI tarball admission, full Web boot, preset/Skill discovery, real tool calls, attachments, HTTP play and plugin restart lifecycle`)
+  assert.deepEqual(report.language, await systemLanguage(), 'installed DSH reads the actual host UI language')
+  console.log(`PASS Harness ${harness.version}: CLI tarball admission, full Web boot, preset/Skill discovery, real tool calls, attachments, HTTP play, native locale ${JSON.stringify(report.language)} and plugin restart lifecycle`)
+  if (process.env.QXQY_BROWSER) {
+    const { smokeHarnessLanguage } = await import('./smoke-harness-language.mjs')
+    const launchUrl = output.match(/dsh web: (http:\/\/127\.0\.0\.1:\d+[^\s]*)/)?.[1] || url
+    await smokeHarnessLanguage(launchUrl, temporary, report.language)
+  }
 } catch (error) {
   // Do not print the launch URL's temporary authentication token.
   if (output) console.error(output.replace(/token=[^\s]+/g, 'token=<redacted>'))

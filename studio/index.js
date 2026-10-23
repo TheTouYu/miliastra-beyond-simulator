@@ -27,7 +27,7 @@ import { filterLogs } from './log/collect.js'
 import { CANVAS_PRESETS } from './constants.js'
 import { MAX_PLAYERS, PLAYER_SLOTS, normalizePlayerCount, normalizePlayerIndex, normalizeServerLogic } from 'qxqy-server'
 import { exportGia, exportCombinedGia, importGia, inspectGia, validateGiaCompatibility, validateServerGiaCompatibility, exportScriptGia, importScriptGia, isScriptGia } from './gia/codec.js'
-import { collectUsedGuids, isValidGuid, nextFreeGuid } from './gia/guid.js'
+import { GUID_MAX, GUID_MIN, collectUsedGuids, isStoredGuid, isValidGuid, nextFreeGuid } from './gia/guid.js'
 import { collectClientNodes } from './gia/client-order.js'
 import { scriptGuidSignature } from './control-guid-lua.js'
 
@@ -83,8 +83,20 @@ function assetKey(assetType) {
 
 function controlGuid(value) {
   const numeric = typeof value === 'number' || (typeof value === 'string' && /^\d+$/.test(value.trim()))
-  if (!numeric || !isValidGuid(value)) throw new Error('控件索引必须是 1–2147483647 范围内的整数')
+  if (!numeric || !isValidGuid(value)) {
+    throw new Error(`控件索引必须是 ${GUID_MIN}–${GUID_MAX}（0x40000000–0x403FFFFF）范围内的整数`)
+  }
   return Number(value)
+}
+
+// Both ends of historical changes may predate the export range constraint.
+function legacyControlGuid(value) {
+  const numeric = typeof value === 'number' || (typeof value === 'string' && /^\d+$/.test(value.trim()))
+  const guid = Number(value)
+  if (!numeric || !isStoredGuid(guid)) {
+    throw new Error('控件索引必须是 1–2147483647 范围内的整数')
+  }
+  return guid
 }
 
 function readControlGuidChanges(raw = []) {
@@ -105,7 +117,7 @@ function readControlGuidChanges(raw = []) {
     }
     return {
       id: entry.id, controlAsset: entry.controlAsset, controlId: entry.controlId, controlName: entry.controlName,
-      oldGuid: controlGuid(entry.oldGuid), newGuid: controlGuid(entry.newGuid),
+      oldGuid: legacyControlGuid(entry.oldGuid), newGuid: legacyControlGuid(entry.newGuid),
       ...(entry.batchId ? { batchId: entry.batchId } : {}),
       ...(entry.scriptSignature ? { scriptSignature: entry.scriptSignature } : {}),
     }
@@ -116,7 +128,7 @@ function normalizeScriptGuid(raw) {
   const candidates = [raw?.guid, raw?.id]
   for (const value of candidates) {
     const guid = Number(value)
-    if (Number.isSafeInteger(guid) && guid > 0 && guid <= 0x7fffffff) return guid
+    if (isStoredGuid(guid)) return guid
   }
   return 0
 }
@@ -231,12 +243,12 @@ export function createStudio(seed, options = {}) {
     collectUsedGuids(projects.server.root, usedScriptGuids)
     collectUsedGuids(projects.client.root, usedScriptGuids, { skipServerContainer: true })
     for (const script of scripts) {
-      if (isValidGuid(script.guid)) usedScriptGuids.add(Number(script.guid))
+      if (isStoredGuid(script.guid)) usedScriptGuids.add(Number(script.guid))
     }
   }
   function allocateScriptGuid(preferred = 0) {
     refreshUsedGuids()
-    const guid = isValidGuid(preferred) && !usedScriptGuids.has(Number(preferred))
+    const guid = isStoredGuid(preferred) && !usedScriptGuids.has(Number(preferred))
       ? Number(preferred)
       : nextFreeGuid(usedScriptGuids)
     usedScriptGuids.add(guid)
@@ -296,7 +308,7 @@ export function createStudio(seed, options = {}) {
   }
 
   function scriptMountFromGenericSlot(guid) {
-    if (!isValidGuid(guid)) return null
+    if (!isStoredGuid(guid)) return null
     for (const [assetType, project] of [[SERVER_ASSET, projects.server], [CLIENT_ASSET, projects.client]]) {
       let controlId = ''
       walk(project.root, (node) => {
@@ -519,7 +531,7 @@ export function createStudio(seed, options = {}) {
     const node = findNode(project.root, op.id ?? project.selectedId)
     if (!node || node.kind === 'server-container') throw new Error('仅客户端控件或客户端控件模板允许修改索引')
     const guid = controlGuid(op.guid)
-    controlGuid(node.guid)
+    legacyControlGuid(node.guid)
     if (op.autoFillClientGuids !== undefined && typeof op.autoFillClientGuids !== 'boolean') {
       throw new Error('autoFillClientGuids 必须是布尔值')
     }
@@ -530,7 +542,7 @@ export function createStudio(seed, options = {}) {
     const targets = automatic ? collectClientNodes(project, true).map(({ node }) => node) : [node]
     const base = guid - targets.indexOf(node)
     const mappings = targets.map((target, offset) => ({
-      node: target, oldGuid: controlGuid(target.guid), newGuid: controlGuid(base + offset),
+      node: target, oldGuid: legacyControlGuid(target.guid), newGuid: controlGuid(base + offset),
     }))
     const changes = mappings.filter(({ oldGuid, newGuid }) => oldGuid !== newGuid)
     if (!changes.length) return get()
@@ -832,6 +844,7 @@ export function createStudio(seed, options = {}) {
     let next
     let warnings = []
     let metadata = {}
+    let importedGiaScripts = []
     if (normalized === 'json') {
       try {
         next = JSON.parse(bytes.toString('utf8'))
@@ -894,13 +907,13 @@ export function createStudio(seed, options = {}) {
           }
         })
       }
-      collectMounts(imported.project, SERVER_ASSET)
+      collectMounts(imported.project, imported.project.meta.assetType)
       collectMounts(imported.clientProject, CLIENT_ASSET)
-      absorbScripts((imported.scripts || []).map((script) => (
+      importedGiaScripts = (imported.scripts || []).map((script) => (
         mountByGuid.has(Number(script.guid))
           ? { ...script, ...mountByGuid.get(Number(script.guid)) }
           : script
-      )))
+      ))
     } else {
       throw new Error(`unsupported import format: ${format}`)
     }
@@ -924,6 +937,9 @@ export function createStudio(seed, options = {}) {
       project.meta.sourceFile = basename(filename)
       project.meta.sourceFormat = normalized
     }
+    // Resolve mounts only after the imported control tree exists. Resolving
+    // against the previous tree silently clears valid client-template mounts.
+    absorbScripts(importedGiaScripts)
     absorbScripts(next?.scripts || [])
     if (next?.script && (next.script.path || next.script.source)) {
       absorbScripts([next.script])

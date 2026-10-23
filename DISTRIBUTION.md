@@ -4,7 +4,7 @@
 
 采用单仓库 pnpm workspace，保留现有模块路径。根 `package.json` 同时是开发入口和 `dsh-plugin-beyond-simulator` 的对外清单，维护插件版本、exports、运行依赖与 `dsh.bundle`。`dsh-plugin/package.json` 仅声明私有源码包 `qxqy-dsh-adapter`，不再重复维护对外包名和版本。`client/lua-runtime`、`server`、`studio`、`editor-ui` 同样为私有内部包，通过 `workspace:*` 引用。Web、MCP 的对外清单与版本仍在各自目录。单一 `pnpm-lock.yaml` 记录依赖。
 
-`scripts/build.mjs` 为 Web、Harness、MCP 分别生成 ESM Node 入口及同目录 Worker。核心 JavaScript 打入产品；`fengari`、`protobufjs`、`@napi-rs/canvas` 保留为明确的运行依赖。Canvas 的原生依赖按安装平台选取。Pixi 和 Web React 编译进浏览器资源；Harness 从宿主取得 React。
+`scripts/build.mjs` 为 Web、Harness、MCP 分别生成 ESM Node 入口及同目录 Worker。核心 JavaScript 打入产品；`fengari`、`@napi-rs/canvas` 保留为明确的运行依赖。DSH 的完整 `protobufjs` 随 Host 和 Worker 打入，避免 GIA 的导入期解析依赖宿主共享 CommonJS 状态；Web/MCP 继续显式依赖外部 `protobufjs`。Canvas 的原生依赖按安装平台选取。Pixi 和 Web React 编译进浏览器资源；Harness 从宿主取得 React。
 
 `editor-ui` 只接收 React、API 调用函数和试玩 URL，不依赖 Harness 服务。Harness 薄适配层负责 slots / ModuleLoader；Web 薄适配层负责 React 挂载、标签页会话与保存入口。双方共用原有控件编辑、脚本、服务端逻辑及试玩界面。
 
@@ -74,6 +74,7 @@ Docker 使用相同的 tarball 流程，以非 root 用户运行并保留 `/data
 |---|---|---|
 | 仅 DSH 插件 | `npm-dsh-2026-10-07-1` | `node scripts/publish-npm.mjs --check --product=dsh-plugin` |
 | 仅 MCP | `npm-mcp-2026-10-07-1` | `node scripts/publish-npm.mjs --check --product=mcp` |
+| 仅 Web | `npm-web-2026-10-18-1` | `node scripts/publish-npm.mjs --check --product=web` |
 | 三包 | `npm-2026-10-07-1` | `node scripts/publish-npm.mjs --check` |
 
 Git tag 触发 npm 流程，不会自动创建 GitHub Release。版本公告单独创建 Release，并仅附加本次发布产品的安装包。

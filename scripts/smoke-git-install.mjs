@@ -43,8 +43,16 @@ try {
   } else {
     await writeFile(join(consumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }))
   }
-  await writeFile(join(consumer, 'pnpm-workspace.yaml'), 'onlyBuiltDependencies:\n  - dsh-plugin-beyond-simulator\n  - esbuild\n')
-  const spec = `git+${pathToFileURL(source).href}#master`
+  // pnpm >= 10.15 gates build scripts of Git dependencies behind `allowBuilds`,
+  // and the key it demands names the exact resolved revision
+  // (`<name>@git+<url>#<sha>`), so a bare package name is not enough. The
+  // fixture above is committed locally, so its SHA is known here.
+  const sourceRevision = run('git', ['rev-parse', 'HEAD'], source).trim()
+  const gitSpec = `git+${pathToFileURL(source).href}`
+  await writeFile(join(consumer, 'pnpm-workspace.yaml'),
+    'onlyBuiltDependencies:\n  - esbuild\nallowBuilds:\n'
+    + `  "dsh-plugin-beyond-simulator@${gitSpec}#${sourceRevision}": true\n`)
+  const spec = `${gitSpec}#master`
   console.log(`Installing Git source in an isolated consumer: ${spec}`)
   if (dshCli) {
     run(process.execPath, [dshCli, 'plugin', '--profile', 'web', 'add', spec], temporary, { env: dshEnv, stdio: 'inherit' })

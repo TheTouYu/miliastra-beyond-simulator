@@ -6,6 +6,10 @@
 
 所有编辑操作沿用 Controller snapshot、revision 与 patch 契约。此层不读取文件系统、不注册 Harness 服务，也不处理部署认证。
 
+顶部导航栏「字体设置」旁提供「自动 / 中文 / English」语言选择；底栏提供按当前安装包检查 GitHub Release 更新及联系作者弹窗。默认按运行环境语言选择；切换保留编辑草稿，项目内容和 API 标识符不翻译。术语来源、更新匹配与验证边界见 [界面说明](../studio/docs/interface.md)。
+
+顶栏「字体设置」通过本机专用 `/qxqy-font/settings` 接口配置宿主字体，独立于项目快照与 revision。支持自动尝试 Windows 原神常见安装位置、指定 TTF/OTF 绝对路径和使用系统字体；保存后重启宿主并刷新页面生效，表单不重载编辑器或丢弃草稿。应用范围可选「仅游戏内文本」或「整体 UI」（默认），后者还覆盖工具栏、属性表单、弹窗、代码和日志。原有 `QXQY_FONT_PATH` 优先并锁定来源与路径，仍可调整范围。范围选项随 Web 0.5.0 发布，已发布的 DSH 2.2.0 不含此选项。路径持久化、候选位置、错误回退及访问边界见 [本地字体说明](../studio/docs/local-fonts.md)。
+
 颜色属性使用「颜色 + 透明度」两个编辑栏：颜色提供原生取色器与 `#RRGGBB` 输入，透明度提供滑块与 0–100 的整数百分比输入（Alpha：0% 完全透明、100% 完全不透明）。图片填充色、文本色、背景色和描边色共用 `color-field.js`，底层仍保存 uint32 ARGB；每次提交只替换对应通道，基于编辑队列中的最新快照合并，避免连续修改两栏时互相覆盖。Alpha 编辑后按 8 位量化，百分比四舍五入显示整数；仅查看、聚焦或失焦不重写原始 Alpha，未修改的通道原样保留。
 
 「变换」提供 X/Y/Z 旋转输入（度）。X/Y 的压缩、侧立与背面翻转由 `control-transform.js` 保留完整投影矩阵显示；90° 侧立时可从控件树选中并调整。GIA/试玩与组合策略见 [旋转支持](../studio/docs/control-support.md#xy-旋转投影2026-10-12)。
@@ -13,6 +17,8 @@
 `image-preview.js` 显示白名单静态图片，复用浏览器图片加载器与 HTTP 缓存，Canvas2D 处理 RGB 乘色、alpha 和填充。宿主需提供同源 `/qxqy-assets/` 路由与 `image-refresh` action；「重新下载此素材」会刷新磁盘副本，并通知同源试玩页面重载纹理。完整边界见 [素材缓存](../studio/docs/image-assets.md)。
 
 图片源可选「静态引用 / 元件」；元件来源的编辑预览、纹理与刷新使用 `imageSource + imageId` 作为资源身份。`image-refresh` body 接收 `imageSource`，省略时兼容静态来源；Prefab 请求 `/qxqy-assets/prefab-v1/<id>.png`。
+
+编辑画布与编辑器截图支持图片矩形遮罩和羽化。`mask-preview.js` 按快照遮罩链分组，复用试玩覆盖率处理重叠与嵌套；选框保留在效果层外。属性提交后直接更新，支持范围与验证见 [编辑遮罩预览](../studio/docs/control-support.md#编辑画布遮罩与羽化2026-10-20)。
 
 ## 试玩窗口与内嵌兜底
 

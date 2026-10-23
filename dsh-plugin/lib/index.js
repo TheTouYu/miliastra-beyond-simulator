@@ -6,6 +6,9 @@ import { listWorkspaceArchives, resolveWorkspaceArchive } from './workspace-arch
 import { serveImageAsset } from 'qxqy-studio/host/image-assets'
 import { serveAudioAsset } from 'qxqy-studio/host/audio-assets'
 import { localFont, serveLocalFont } from 'qxqy-studio/host/local-font'
+import { createUpdateChecker } from 'qxqy-studio/host/updates'
+import { systemLanguage, localLanguageRequest } from 'qxqy-studio/host/system-language'
+import manifest from '../../package.json' with { type: 'json' }
 
 export const name = 'qxqy-simulator'
 export const inject = ['tools', 'webServer']
@@ -302,8 +305,8 @@ function readBody(request) {
 function registerTools(ctx, registry) {
   ctx.tools.register(defineTool({
     name: 'qxqy_script_sync',
-    description: '实机 Lua 目录复制同步：discover/status/configure/preview。configure 的 args 包含 config(version:1, workspaceDir, clientImportRoot, clientSubdir) 和 expectedRevision；配置随完整存档保存。preview 只检查差异，复制必须由用户在 Lua 脚本页面检查并确认。',
-    parameters: { action: { type: 'string', enum: ['discover', 'status', 'configure', 'preview'], required: true }, args: { type: 'json' } },
+    description: '实机 Lua 脚本目录同步：discover/status/configure/save/preview/apply。configure 需要 config(version:1, workspaceDir, clientImportRoot, clientSubdir) 与 expectedRevision；save 需要 expectedRevision，首次保存另传工作区相对 path。用户授权更新后，先 save，再 preview 核对来源与目标，最后 apply 传 planId、选定 scriptIds 和 confirmed:true。计划仅在当前会话有效，过期需重新预览；返回逐文件结果与备份位置，不代表真机试玩通过。',
+    parameters: { action: { type: 'string', enum: ['discover', 'status', 'configure', 'save', 'preview', 'apply'], required: true }, args: { type: 'json' } },
     output: { schema: { type: 'json' }, render: (_args, value) => [{ type: 'text', text: JSON.stringify(value, null, 2) }] },
     timeoutMs: 10_000,
     isConcurrencySafe: () => false,
@@ -472,7 +475,7 @@ function registerTools(ctx, registry) {
   }))
 }
 
-function registerApi(ctx, registry) {
+function registerApi(ctx, registry, checkUpdates) {
   registerRoute(ctx, {
     kind: 'prefix',
     path: API_PREFIX,
@@ -491,13 +494,18 @@ function registerApi(ctx, registry) {
       request.once('aborted', () => abort.abort())
       try {
         const body = await readBody(request)
+        if (action === 'locale') {
+          sendJson(response, 200, { ok: true, value: localLanguageRequest(request) ? await systemLanguage() : { language: '', source: 'browser' }, error: null })
+          return
+        }
         const workspacePath = await lookupSessionWorkspace(body.sessionId, {
           sessions: ctx.get?.('sessions'),
           sessionPersistence: ctx.get?.('sessionPersistence'),
         })
         const controller = registry.get(body.sessionId, workspacePath)
         let value
-        if (action === 'get') value = controller.get()
+        if (action === 'updates') value = await checkUpdates()
+        else if (action === 'get') value = controller.get()
         else if (action === 'patch') value = controller.patch(body.op)
         else if (action === 'export') value = controller.exportData(body.format, body.assetType)
         else if (action === 'import') value = controller.importData(body.format, body.data, body.filename)
@@ -526,7 +534,7 @@ export function apply(ctx) {
   // Install cleanup before registration can throw, and let Cordis await workers.
   ctx.effect(() => () => registry.dispose(), 'qxqy-simulator: dispose sessions')
   registerTools(ctx, registry)
-  registerApi(ctx, registry)
+  registerApi(ctx, registry, createUpdateChecker({ packageName: manifest.name, currentVersion: manifest.version }))
   registerPlayPage(ctx)
   registerPlayRenderer(ctx)
   registerRoute(ctx, { kind: 'prefix', path: '/qxqy-assets', handler: (request, response) => serveImageAsset(request, response) })

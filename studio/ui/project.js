@@ -134,7 +134,7 @@ function visibleBoxesForProject(project, boxes) {
 
 export function snapshotProject(project) {
   const { canvas, boxes } = layoutTree(project.root, project.canvasId)
-  const guidById = assignGuids(project)
+  const guidById = assignGuids(project, new Set(), { preserveLegacy: true })
   const selected = findNode(project.root, project.selectedId)
   const selectedBox = selected ? boxes[selected.id] : null
   return toJson({
@@ -381,6 +381,10 @@ function applyPatchMutating(project, op) {
     let key = op.key
     if (key === 'reverseMask') key = 'reverseMaskArea'
     let value = op.value
+    if (node.kind === 'reference' && ['referencedPrefabId', 'giaRaw.templateRefSlot'].includes(key)
+      && (node.giaRaw.templateRefSlotBase64 || node.giaRaw.templateRefOuterBase64)) {
+      throw new Error('该模板引用含尚未解析的原始配置，暂不能改写目标索引；请在官方编辑器修改后重新导入')
+    }
     if (key.startsWith('giaRaw.')) {
       const rawKey = key.slice('giaRaw.'.length)
       if (!rawKey || rawKey.includes('.')) throw new Error('invalid raw GIA field path')
@@ -457,7 +461,9 @@ function applyPatchMutating(project, op) {
         const rawFillType = { Horizontal: 1, Vertical: 2, Radial90: 3, Radial180: 4, Radial360: 5 }[value]
         if (rawFillType) node.giaRaw.imageFillType = rawFillType
       }
-      if (node.kind === 'reference' && key === 'referencedPrefabId') node.giaRaw.templateRefSlot = value
+      if (node.kind === 'reference' && key === 'referencedPrefabId') {
+        node.giaRaw.templateRefSlot = value
+      }
       if (node.kind === 'grid' && key === 'previewCount') node.giaRaw.gridField511 = Math.trunc(value)
       if (node.kind === 'keyhint' && key === 'keyboardKeyCode') node.giaRaw.keyHintField502 = Math.trunc(value)
       if (node.kind === 'keyhint' && key === 'controllerKeyCode') node.giaRaw.keyHintField501 = Math.trunc(value)

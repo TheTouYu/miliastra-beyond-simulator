@@ -6,7 +6,9 @@ import { loadBrowserImageAsset, subscribeImageRefresh } from '../assets/browser.
 import { sliceRegions, resolveImageType } from '../assets/image-stretch.js'
 import { imageAssetKey, imageSourceName } from '../assets/catalog.js'
 export { loadBrowserFont } from './browser-font.js'
+export { t, getLocale, getLanguagePreference, setLanguagePreference, subscribeLocale, localizePage, loadSystemLanguage, getSystemLanguage } from '../i18n.js'
 import { DEFAULT_FONT } from '../fonts.js'
+import { paintRichTextCanvas } from './rich-text-paint.js'
 // Pixi's default uniform sync uses Function().  Local Web intentionally has a
 // restrictive CSP, so register Pixi's static sync implementation instead.
 import 'pixi.js/unsafe-eval'
@@ -44,6 +46,40 @@ function textAnchor(item) {
   const horizontal = item.horizontalAlignment === 'Right' ? 1 : item.horizontalAlignment === 'Middle' ? 0.5 : 0
   const vertical = item.verticalAlignment === 'Bottom' ? 1 : item.verticalAlignment === 'Middle' ? 0.5 : 0
   return { x: horizontal, y: vertical }
+}
+
+function textVisual(item, width, height, family) {
+  const layout = item.textLayout
+  const font = layout?.fontSize ?? Math.max(1, finite(item.fontSize, 12))
+  const anchor = textAnchor(item)
+  const scroll = item.kind === 'textwindow' ? item.scroll : null
+  const slice = scroll ? visibleTextLines(scroll, height) : null
+  const style = {
+    fontFamily: family || DEFAULT_FONT,
+    fontSize: font,
+    fill: argb(item.fontColor, 0xffffffff),
+    stroke: item.enableOutline ? { ...argb(item.outlineColor, 0xff000000), width: Math.max(2, font * 0.12), join: 'round' } : undefined,
+    wordWrap: !scroll && !layout,
+    wordWrapWidth: Math.max(4, width - 4),
+    breakWords: true,
+    align: anchor.x === 1 ? 'right' : anchor.x === 0.5 ? 'center' : 'left',
+    lineHeight: layout?.lineHeight ?? font * 1.2,
+  }
+  return {
+    text: slice ? slice.text : layout ? layout.lines.slice(0, layout.visibleLineCount ?? layout.lines.length).join('\n') : String(item.text || ''),
+    style,
+    anchorX: anchor.x,
+    anchorY: scroll ? 0 : anchor.y,
+    x: scroll ? -width / 2 + 2 + anchor.x * scroll.textWidth : anchor.x === 0 ? -width / 2 + 2 : anchor.x === 1 ? width / 2 - 2 : 0,
+    y: scroll ? -height / 2 - scroll.offset + slice.y + (scroll.max > 0 ? 0 : anchor.y * (height - scroll.contentLength))
+      : anchor.y === 0 ? -height / 2 : anchor.y === 1 ? height / 2 : 0,
+  }
+}
+
+function textChromeKey(item, width, height) {
+  // The background, clipping box and scrollbar are independent of HUD text.
+  // A changed viewport/chrome still uses the normal rebuild path.
+  return JSON.stringify([item.kind, width, height, item.bgColor, scrollBarGeometry(item.scroll, width, height)])
 }
 
 function pointsFor(item, width, height) {
@@ -153,15 +189,75 @@ export class PixiPlayRenderer {
 
   clearVisual(root) {
     if (!root.__visual) return
+    const text = root.__visual.__text
+    const gpu = this.app?.renderer
+    const managed = gpu?.renderPipes?.text?._managedTexts?.items
+    const oldKey = text?._gpuData?.[gpu?.uid]?.currentKey
+    const uid = text?.uid
     root.__visual.parent?.removeChild(root.__visual)
     // Every Graphics in a visual owns its context. Passing only `children`
     // suppresses Pixi's default context disposal and leaves old geometry in
     // the timed GC pool after animated sizes/colors replace the visual.
     const geometry = root.__visual.__sliceGeometry
-    root.__visual.destroy({ children: true, context: true })
+    const richTexture = root.__visual.__richText?.texture
+    // Each TextStyle is owned here. Text.destroy() unloads its managed GPU
+    // reference in Pixi 8.20; image/circle textures belong to shared caches.
+    root.__visual.destroy({ children: true, context: true, style: true })
+    richTexture?.destroy(true)
+    if (managed && uid !== undefined && managed[uid] === null) delete managed[uid]
+    if (oldKey) this.retireTextKey(oldKey)
     geometry?.destroy(true)
     root.__visual = null
     root.__visualKey = ''
+  }
+
+  retireTextKey(key) {
+    if (!key) return
+    this.retiredTextKeys ||= new Set()
+    this.retiredTextKeys.add(key)
+  }
+
+  pruneTextKeys() {
+    // Pixi 8.20 returns textures to its reference-counted pool but leaves null
+    // entries indexed by the entire old string. Retire only our previous keys
+    // after rendering has released them; never destroy a live/shared texture.
+    const textures = this.app?.renderer?.canvasText?._activeTextures
+    for (const key of this.retiredTextKeys || []) {
+      if (textures?.[key] === null) delete textures[key]
+      // A culled Text may release its old key only on a later render. Keep
+      // pending live keys until then (also protects another Text sharing it).
+      if (!textures?.[key]) this.retiredTextKeys.delete(key)
+    }
+  }
+
+  updateTextVisual(root, item, width, height) {
+    const visual = root.__visual
+    if (item.kind !== 'textbox' && item.kind !== 'textwindow') return false
+    if (visual?.__richText) {
+      if (!item.textLayout?.richLines || visual.__textChromeKey !== textChromeKey(item, width, height)) return false
+      const sprite = visual.__richText
+      paintRichTextCanvas(sprite.texture.source.resource, item, width, height, this.fontFamily, this.app?.renderer?.resolution || 1)
+      sprite.texture.source.update()
+      return true
+    }
+    if (item.textLayout?.richLines) return false
+    if (!visual?.__text || visual.__textChromeKey !== textChromeKey(item, width, height)) return false
+    const text = visual.__text
+    const next = textVisual(item, width, height, this.fontFamily)
+    const styleKey = JSON.stringify(next.style)
+    if (text.text !== next.text || visual.__textStyleKey !== styleKey) {
+      this.retireTextKey(text._gpuData?.[this.app?.renderer?.uid]?.currentKey)
+      if (visual.__textStyleKey !== styleKey) {
+        const previous = text.style
+        text.style = new TextStyle(next.style)
+        previous.destroy()
+        visual.__textStyleKey = styleKey
+      }
+      text.text = next.text
+    }
+    text.anchor.set(next.anchorX, next.anchorY)
+    text.position.set(next.x, next.y)
+    return true
   }
 
   circleTexture(diameter) {
@@ -240,36 +336,26 @@ export class PixiPlayRenderer {
       const bg = argb(item.bgColor, 0x00ffffff)
       background.rect(-width / 2, -height / 2, width, height).fill(bg)
       visual.addChild(background)
-      const layout = item.textLayout
-      const font = layout?.fontSize ?? Math.max(1, finite(item.fontSize, 12))
-      const anchor = textAnchor(item)
-      const scroll = item.kind === 'textwindow' ? item.scroll : null
-      const slice = scroll ? visibleTextLines(scroll, height) : null
-      const text = new Text({
-        text: slice ? slice.text : layout ? layout.lines.join('\n') : String(item.text || ''),
-        style: new TextStyle({
-          fontFamily: this.fontFamily || DEFAULT_FONT,
-          fontSize: font,
-          fill: argb(item.fontColor, 0xffffffff),
-          stroke: item.enableOutline ? { ...argb(item.outlineColor, 0xff000000), width: Math.max(2, font * 0.12), join: 'round' } : undefined,
-          wordWrap: !scroll && !layout,
-          wordWrapWidth: Math.max(4, width - 4),
-          breakWords: true,
-          align: anchor.x === 1 ? 'right' : anchor.x === 0.5 ? 'center' : 'left',
-          lineHeight: layout?.lineHeight ?? font * 1.2,
-        }),
-      })
-      text.anchor.set(anchor.x, anchor.y)
-      text.x = anchor.x === 0 ? -width / 2 + 2 : anchor.x === 1 ? width / 2 - 2 : 0
-      text.y = anchor.y === 0 ? -height / 2 : anchor.y === 1 ? height / 2 : 0
-      if (scroll) {
-        text.anchor.set(anchor.x, 0)
-        text.x = -width / 2 + 2 + anchor.x * scroll.textWidth
-        text.y = -height / 2 - scroll.offset + slice.y + (scroll.max > 0 ? 0 : anchor.y * (height - scroll.contentLength))
+      if (item.textLayout?.richLines) {
+        const canvas = DOMAdapter.get().createCanvas(1, 1)
+        paintRichTextCanvas(canvas, item, width, height, this.fontFamily, this.app?.renderer?.resolution || 1)
+        const sprite = new Sprite({ texture: new Texture({ source: new CanvasSource({ resource: canvas }) }), anchor: 0.5 })
+        sprite.width = width
+        sprite.height = height
+        visual.__richText = sprite
+        visual.addChild(sprite)
+      } else {
+        const next = textVisual(item, width, height, this.fontFamily)
+        const text = new Text({ text: next.text, style: new TextStyle(next.style) })
+        text.anchor.set(next.anchorX, next.anchorY)
+        text.position.set(next.x, next.y)
+        visual.__text = text
+        visual.__textStyleKey = JSON.stringify(next.style)
+        const clip = new Graphics().rect(-width / 2, -height / 2, width, height).fill({ color: 0xffffff, alpha: 1 })
+        text.mask = clip
+        visual.addChild(clip, text)
       }
-      const clip = new Graphics().rect(-width / 2, -height / 2, width, height).fill({ color: 0xffffff, alpha: 1 })
-      text.mask = clip
-      visual.addChild(clip, text)
+      visual.__textChromeKey = textChromeKey(item, width, height)
     } else if (item.kind === 'button') {
       const graphic = new Graphics()
       graphic.roundRect(-width / 2, -height / 2, width, height, 6).fill({ color: 0x3268cf, alpha: 1 })
@@ -379,7 +465,7 @@ export class PixiPlayRenderer {
     const height = Math.max(0, finite(item.sourceHeight, finite(item.height)))
     const visualKey = visualKeyOf(item, width, height)
     if (root.__visualKey !== visualKey) {
-      this.replaceVisual(root, item, width, height)
+      if (!this.updateTextVisual(root, item, width, height)) this.replaceVisual(root, item, width, height)
       // replaceVisual clears the previous key while disposing its Graphics.
       // Commit the new key afterwards so movement does not keep destroying
       // and recreating the same geometry after a size/color update.
@@ -523,6 +609,7 @@ export class PixiPlayRenderer {
 
   clearNodes() {
     for (const id of [...this.nodes.keys()]) this.removeNode(id)
+    this.pruneTextKeys()
   }
 
   async applyScene(scene, width, height) {
@@ -546,6 +633,7 @@ export class PixiPlayRenderer {
     }
     this.pruneImageTextures()
     this.app.render()
+    this.pruneTextKeys()
   }
 
   async render(items, width, height) {
@@ -576,6 +664,7 @@ export class PixiPlayRenderer {
     }
     this.pruneImageTextures()
     this.app.render()
+    this.pruneTextKeys()
   }
 
   destroy() {
